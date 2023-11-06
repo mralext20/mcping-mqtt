@@ -1,13 +1,15 @@
+mod config;
 mod types;
 
 use mcping::{tokio::get_status, Java, JavaResponse};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::{
     env,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinHandle;
+use types::MinecraftServer;
 
 use log::{debug, error, info};
 
@@ -17,40 +19,27 @@ async fn main() {
         .filter_module("mcping_mqtt", log::LevelFilter::Debug)
         .init();
 
-    // let res = check_kbrt().await;
-    // match res {
-    //     Ok(_) => info!("KBRT is up!"),
-    //     Err(e) => {
-    //         error!("KBRT is down: {}", e);
-    //         return;
-    //     }
-    // }
-    let (mqtt, _ev) = mqtt_setup();
+    let mut servers = Arc::new(Mutex::new(config::get_servers()));
+    let (mqtt, ev) = mqtt_setup(servers.clone());
 
     match mqtt.subscribe("mcping/create", QoS::AtLeastOnce).await {
         Ok(_) => info!("Subscribed to mcping/create"),
         Err(e) => error!("Failed to subscribe to mcping/create: {}", e),
     };
 
-    let servers = vec![
-        types::MinecraftServer {
-            name: "KBRT".to_string(),
-            host: "10.0.6.1".to_string(),
-        },
-        types::MinecraftServer {
-            name: "Hypixel".to_string(),
-            host: "mc.hypixel.net".to_string(),
-        },
-    ];
-
     loop {
-        server_checking_loop(servers.clone(), mqtt.clone()).await;
+        server_checking_loop(servers.clone(), &mqtt).await;
         tokio::time::sleep(Duration::from_secs(30)).await;
+        if ev.is_finished() {
+            break;
+        }
     }
 }
 
-async fn server_checking_loop(servers: Vec<types::MinecraftServer>, mqtt: Arc<AsyncClient>) {
-    for server in servers {
+async fn server_checking_loop(servers: Arc<Mutex<Vec<MinecraftServer>>>, mqtt: &AsyncClient) {
+    let servers = servers.lock().unwrap();
+    for server in servers.iter() {
+        let server = server.clone();
         let res = check_server(server.host).await;
         match res {
             Ok(_res) => {
@@ -71,7 +60,7 @@ async fn server_checking_loop(servers: Vec<types::MinecraftServer>, mqtt: Arc<As
     }
 }
 
-fn mqtt_setup() -> (Arc<AsyncClient>, JoinHandle<()>) {
+fn mqtt_setup(servers: Arc<Mutex<Vec<MinecraftServer>>>) -> (Arc<AsyncClient>, JoinHandle<()>) {
     let mut mqtt_options = MqttOptions::new(
         "mcping",
         env::var("MQTT_SERVER").unwrap_or("localhost".to_string()),
@@ -81,12 +70,16 @@ fn mqtt_setup() -> (Arc<AsyncClient>, JoinHandle<()>) {
     mqtt_options.set_credentials("mcping", "password");
     let (mqtt, eventloop) = AsyncClient::new(mqtt_options, 10);
     let mqtt_rc = Arc::new(mqtt);
-    let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone()));
+    let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone(), servers));
 
     return (mqtt_rc, evloop);
 }
 
-async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>) {
+async fn mqtt_loop(
+    mut ev: EventLoop,
+    mqtt: Arc<AsyncClient>,
+    servers: Arc<Mutex<Vec<MinecraftServer>>>,
+) {
     loop {
         match ev.poll().await {
             Ok(Event::Incoming(Incoming::PubAck(_))) => {
@@ -108,7 +101,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>) {
                         continue;
                     }
                 };
-                let s: types::MinecraftServer = match serde_json::from_str(payload) {
+                let server_to_add: types::MinecraftServer = match serde_json::from_str(payload) {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to parse JSON: {}", e);
@@ -130,7 +123,9 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>) {
                         continue;
                     }
                 };
-                debug!("Server: {:?}", s);
+                config::add_server(server_to_add.clone());
+                servers.clone().lock().unwrap().push(server_to_add.clone());
+                debug!("Server: {:?}", server_to_add);
             }
             Ok(_) => (),
             Err(e) => {
