@@ -1,1 +1,1 @@
-{"servers":[{"host":"10.0.6.1","name":"kbrt"}]}
+{"servers":[{"host":"10.0.6.1","name":"kbrt"},{"host":"bmc.mc-complex.com","name":"bmc.mc-complex.com"}]}

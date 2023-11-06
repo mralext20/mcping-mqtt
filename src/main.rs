@@ -7,10 +7,12 @@ use std::{
     collections::HashMap,
     env,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::task::JoinHandle;
 use types::MinecraftServer;
+
+use time::OffsetDateTime;
 
 use log::{debug, error, info};
 
@@ -23,9 +25,9 @@ async fn main() {
     let servers = Arc::new(Mutex::new(config::get_servers()));
     let (mqtt, ev) = mqtt_setup(servers.clone());
 
-    match mqtt.subscribe("mcping/*", QoS::AtLeastOnce).await {
-        Ok(_) => info!("Subscribed to mcping/*"),
-        Err(e) => error!("Failed to subscribe to mcping/* */: {}", e),
+    match mqtt.subscribe("mcping/#", QoS::AtLeastOnce).await {
+        Ok(_) => info!("Subscribed to mcping/#"),
+        Err(e) => error!("Failed to subscribe to mcping/#: {}", e),
     };
 
     loop {
@@ -83,9 +85,6 @@ async fn mqtt_loop(
 ) {
     loop {
         match ev.poll().await {
-            Ok(Event::Incoming(Incoming::PubAck(_))) => {
-                debug!("puback");
-            }
             Ok(Event::Incoming(Incoming::Publish(p))) if p.topic == "mcping/create" => {
                 debug!("publish on create new server: {:?}", p.payload);
                 let payload = match std::str::from_utf8(&p.payload) {
@@ -112,7 +111,7 @@ async fn mqtt_loop(
                             false,
                             format!(
                                 "{:?}: Failed to parse JSON\nuse Format {:?}",
-                                SystemTime::now().duration_since(UNIX_EPOCH),
+                                OffsetDateTime::now_local(),
                                 types::MinecraftServer {
                                     host: "mc.kbrt.xyz".to_string(),
                                     name: "KBRT".to_string()
@@ -124,10 +123,51 @@ async fn mqtt_loop(
                         continue;
                     }
                 };
+                if servers
+                    .clone()
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|&server| server.name == server_to_add.name)
+                    .is_some()
+                {
+                    error!("Server already exists: {}", server_to_add.name);
+                    mqtt.try_publish(
+                        "mcping/create/error",
+                        QoS::AtLeastOnce,
+                        false,
+                        "Server name already exists",
+                    )
+                    .expect("Failed to publish error message");
+                    continue;
+                }
+
                 config::add_server(server_to_add.clone());
                 servers.clone().lock().unwrap().push(server_to_add.clone());
-                debug!("Server: {:?}", server_to_add);
+                debug!("Server added: {:?}", server_to_add);
+                debug!("calling server_checking_loop");
             }
+            Ok(Event::Incoming(Incoming::Publish(p)))
+                if p.topic.starts_with("mcping/")
+                    && std::str::from_utf8(&p.payload) == Ok("delete") =>
+            {
+                debug!("publish on delete server: {:?}", p.topic);
+                let servers = servers.clone();
+                let servers = servers.lock().unwrap();
+                let server_to_delete = servers
+                    .iter()
+                    .find(|&server| server.name == p.topic.trim_start_matches("mcping/"));
+
+                if server_to_delete.is_some() {
+                    debug!("Server deleted: {:?}", server_to_delete);
+
+                    config::delete_server(server_to_delete.unwrap().clone());
+                } else {
+                    error!("Server not found: {}", p.topic);
+                    continue;
+                };
+            }
+
             Ok(_) => (),
             Err(e) => {
                 error!("Connection error: {}", e);
@@ -199,7 +239,6 @@ async fn check_server(
         debug!("{}: {}", key, value);
     }
 
-    info!("{} is up!", server.name);
     post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
     return Ok(data);
 }
