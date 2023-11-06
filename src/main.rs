@@ -4,6 +4,7 @@ mod types;
 use mcping::{tokio::get_status, Java, JavaResponse};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
 use std::{
+    collections::HashMap,
     env,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -19,12 +20,12 @@ async fn main() {
         .filter_module("mcping_mqtt", log::LevelFilter::Debug)
         .init();
 
-    let mut servers = Arc::new(Mutex::new(config::get_servers()));
+    let servers = Arc::new(Mutex::new(config::get_servers()));
     let (mqtt, ev) = mqtt_setup(servers.clone());
 
-    match mqtt.subscribe("mcping/create", QoS::AtLeastOnce).await {
-        Ok(_) => info!("Subscribed to mcping/create"),
-        Err(e) => error!("Failed to subscribe to mcping/create: {}", e),
+    match mqtt.subscribe("mcping/*", QoS::AtLeastOnce).await {
+        Ok(_) => info!("Subscribed to mcping/*"),
+        Err(e) => error!("Failed to subscribe to mcping/* */: {}", e),
     };
 
     loop {
@@ -40,7 +41,7 @@ async fn server_checking_loop(servers: Arc<Mutex<Vec<MinecraftServer>>>, mqtt: &
     let servers = servers.lock().unwrap();
     for server in servers.iter() {
         let server = server.clone();
-        let res = check_server(server.host).await;
+        let res = check_server(&server, mqtt).await;
         match res {
             Ok(_res) => {
                 info!("{} is up!", server.name);
@@ -142,23 +143,62 @@ async fn post_to_mqtt(client: &AsyncClient, topic: &str, data: &str) {
         .expect("that should have worked ; failed to send message");
 }
 
-async fn check_server(server_ip: String) -> Result<JavaResponse, Box<dyn std::error::Error>> {
-    debug!("Checking {}", server_ip);
-    let (latency, data) = get_status(Java {
-        server_address: server_ip,
+async fn check_server(
+    server: &MinecraftServer,
+    mqtt: &AsyncClient,
+) -> Result<JavaResponse, Box<dyn std::error::Error>> {
+    debug!("Checking {}", server.host);
+    let (latency, data) = match get_status(Java {
+        server_address: server.host.clone(),
         timeout: Some(Duration::from_secs(5)),
     })
-    .await?;
-    debug!("Latency: {:?}", latency);
-    debug!("version: {:?}", data.version.name);
-    debug!("description: {:?}", data.description.text());
-    debug!("players: {}/{}", data.players.online, data.players.max);
-    if data.players.online > 0 && data.players.sample.is_some() {
-        debug!("Players:");
-        let players = data.players.sample.as_ref().unwrap().iter();
-        for player in players {
-            debug!("  {}", player.name);
+    .await
+    {
+        Ok(data) => data,
+        Err(e) => {
+            error!("{}: Server is offline: {}", server.name, e);
+            post_to_mqtt(
+                &mqtt,
+                &format!("mcping/{}", server.name).to_string(),
+                "down",
+            )
+            .await;
+            return Err(Box::new(e));
         }
+    };
+
+    let players_str: String;
+    if data.players.online > 0 && data.players.sample.is_some() {
+        players_str =
+            data.players
+                .sample
+                .as_ref()
+                .unwrap()
+                .iter()
+                .fold(String::new(), |mut acc, player| {
+                    acc.push_str(format!("{}, ", player.name).as_str());
+                    acc
+                });
+        debug!("Players: {}", players_str);
+    } else {
+        players_str = "No players online".to_string();
     }
+
+    let entries = HashMap::from([
+        ("latency", latency.to_string()),
+        ("version", data.version.name.clone()),
+        ("description", data.description.text().to_string()),
+        ("player_count", data.players.online.to_string()),
+        ("player_max", data.players.max.to_string()),
+        ("players", players_str),
+    ]);
+
+    for (key, value) in entries.iter() {
+        post_to_mqtt(&mqtt, &format!("mcping/{}/{}", server.name, key), value).await;
+        debug!("{}: {}", key, value);
+    }
+
+    info!("{} is up!", server.name);
+    post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
     return Ok(data);
 }
