@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 
 const CONFIG_FILE: &str = "config.json";
 
+// honestly copilot did all of this
+
 pub fn get_servers() -> Vec<types::MinecraftServer> {
     let mut servers = Vec::new();
     let mut file = match File::open(CONFIG_FILE) {
@@ -40,7 +42,8 @@ pub fn add_server(server: types::MinecraftServer) {
             "host": server.host
         }));
     let mut file = File::create(CONFIG_FILE).unwrap();
-    file.write_all(json.to_string().as_bytes()).unwrap();
+    file.write_all(serde_json::to_string_pretty(&json).unwrap().as_bytes())
+        .unwrap();
 }
 
 pub fn delete_server(server: types::MinecraftServer) {
@@ -56,5 +59,6 @@ pub fn delete_server(server: types::MinecraftServer) {
     }
     json["servers"] = serde_json::json!(servers);
     let mut file = File::create(CONFIG_FILE).unwrap();
-    file.write_all(json.to_string().as_bytes()).unwrap();
+    file.write_all(serde_json::to_string_pretty(&json).unwrap().as_bytes())
+        .unwrap();
 }
