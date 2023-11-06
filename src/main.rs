@@ -185,6 +185,7 @@ async fn check_server(
     }
 
     let entries = HashMap::from([
+        ("host", server.host.clone()),
         ("latency", latency.to_string()),
         ("version", data.version.name.clone()),
         ("description", data.description.text().to_string()),
