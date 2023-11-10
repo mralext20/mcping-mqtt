@@ -1,16 +1,17 @@
-mod config;
-mod types;
+mod models;
+pub mod schema;
 
+use diesel::prelude::*;
+
+use crate::schema::*;
+
+use models::MinecraftServer;
+
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use mcping::{tokio::get_status, Java, JavaResponse};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
-use std::{
-    collections::HashMap,
-    env,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashMap, env, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
-use types::MinecraftServer;
 
 use time::OffsetDateTime;
 
@@ -22,16 +23,25 @@ async fn main() {
         .filter_module("mcping_mqtt", log::LevelFilter::Debug)
         .init();
 
-    let servers = Arc::new(Mutex::new(config::get_servers()));
-    let (mqtt, ev) = mqtt_setup(servers.clone());
+    dotenvy::dotenv().ok();
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_conn = AsyncPgConnection::establish(&database_url)
+        .await
+        .expect("could not connect to database");
+
+    let (mqtt, ev) = mqtt_setup(db_conn);
 
     match mqtt.subscribe("mcping/#", QoS::AtLeastOnce).await {
         Ok(_) => info!("Subscribed to mcping/#"),
         Err(e) => error!("Failed to subscribe to mcping/#: {}", e),
     };
 
+    let mut db_conn = AsyncPgConnection::establish(&database_url)
+        .await
+        .expect("could not connect to database");
+
     loop {
-        server_checking_loop(servers.clone(), &mqtt).await;
+        server_checking_loop(&mut db_conn, &mqtt).await;
         tokio::time::sleep(Duration::from_secs(30)).await;
         if ev.is_finished() {
             break;
@@ -39,10 +49,13 @@ async fn main() {
     }
 }
 
-async fn server_checking_loop(servers: Arc<Mutex<Vec<MinecraftServer>>>, mqtt: &AsyncClient) {
-    let servers = servers.lock().unwrap();
+async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: &AsyncClient) {
+    let servers: Vec<MinecraftServer> = servers::table
+        .select(MinecraftServer::as_select())
+        .load(db_conn)
+        .await
+        .expect("Failed to load servers from database");
     for server in servers.iter() {
-        let server = server.clone();
         let res = check_server(&server, mqtt).await;
         match res {
             Ok(_res) => {
@@ -63,26 +76,23 @@ async fn server_checking_loop(servers: Arc<Mutex<Vec<MinecraftServer>>>, mqtt: &
     }
 }
 
-fn mqtt_setup(servers: Arc<Mutex<Vec<MinecraftServer>>>) -> (Arc<AsyncClient>, JoinHandle<()>) {
+fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) {
     let mut mqtt_options = MqttOptions::new(
         "mcping",
         env::var("MQTT_SERVER").unwrap_or("localhost".to_string()),
         1883,
     );
+
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_credentials("mcping", "password");
     let (mqtt, eventloop) = AsyncClient::new(mqtt_options, 10);
     let mqtt_rc = Arc::new(mqtt);
-    let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone(), servers));
+    let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone(), db_conn));
 
     return (mqtt_rc, evloop);
 }
 
-async fn mqtt_loop(
-    mut ev: EventLoop,
-    mqtt: Arc<AsyncClient>,
-    servers: Arc<Mutex<Vec<MinecraftServer>>>,
-) {
+async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: AsyncPgConnection) {
     loop {
         match ev.poll().await {
             Ok(Event::Incoming(Incoming::Publish(p))) if p.topic == "mcping/create" => {
@@ -101,7 +111,7 @@ async fn mqtt_loop(
                         continue;
                     }
                 };
-                let server_to_add: types::MinecraftServer = match serde_json::from_str(payload) {
+                let server_to_add: MinecraftServer = match serde_json::from_str(payload) {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to parse JSON: {}", e);
@@ -112,7 +122,7 @@ async fn mqtt_loop(
                             format!(
                                 "{:?}: Failed to parse JSON\nuse Format {:?}",
                                 OffsetDateTime::now_local(),
-                                types::MinecraftServer {
+                                MinecraftServer {
                                     host: "mc.kbrt.xyz".to_string(),
                                     name: "KBRT".to_string()
                                 }
@@ -123,45 +133,52 @@ async fn mqtt_loop(
                         continue;
                     }
                 };
-                if servers
-                    .clone()
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|&server| server.name == server_to_add.name)
-                    .is_some()
-                {
-                    error!("Server already exists: {}", server_to_add.name);
+                if server_to_add.name == "" || server_to_add.host == "" {
+                    error!("Server name or host is empty");
                     mqtt.try_publish(
                         "mcping/create/error",
                         QoS::AtLeastOnce,
                         false,
-                        "Server name already exists",
+                        "Server name is empty",
                     )
                     .expect("Failed to publish error message");
                     continue;
                 }
-
-                config::add_server(server_to_add.clone());
-                servers.clone().lock().unwrap().push(server_to_add.clone());
-                debug!("Server added: {:?}", server_to_add);
-                debug!("calling server_checking_loop");
+                let inserted = diesel::insert_into(servers::table)
+                    .values(server_to_add)
+                    .returning(MinecraftServer::as_select())
+                    .load(&mut db_conn)
+                    .await
+                    .expect("Failed to insert server into database");
+                if inserted.len() != 1 {
+                    error!("Failed to insert server into database");
+                    mqtt.try_publish(
+                        "mcping/create/error",
+                        QoS::AtLeastOnce,
+                        false,
+                        "Failed to insert server into database",
+                    )
+                    .expect("Failed to publish error message");
+                    continue;
+                } else {
+                    debug!("Server added: {:?}", inserted[0]);
+                }
             }
             Ok(Event::Incoming(Incoming::Publish(p)))
                 if p.topic.starts_with("mcping/")
                     && std::str::from_utf8(&p.payload) == Ok("delete") =>
             {
                 debug!("publish on delete server: {:?}", p.topic);
-                let servers = servers.clone();
-                let servers = servers.lock().unwrap();
-                let server_to_delete = servers
-                    .iter()
-                    .find(|&server| server.name == p.topic.trim_start_matches("mcping/"));
+                let deleted_count = diesel::delete(diesel::QueryDsl::filter(
+                    servers::table,
+                    servers::name.eq(p.topic.replace("mcping/", "")),
+                ))
+                .execute(&mut db_conn)
+                .await
+                .expect("Failed to delete server from database");
 
-                if server_to_delete.is_some() {
-                    debug!("Server deleted: {:?}", server_to_delete);
-
-                    config::delete_server(server_to_delete.unwrap().clone());
+                if deleted_count > 0 {
+                    debug!("Server deleted: {:?}", p.topic.replace("mcping/", ""));
                 } else {
                     error!("Server not found: {}", p.topic);
                     continue;
