@@ -3,13 +3,13 @@ version: '3.4'
 services:
   mcping-mqtt:
     build: .
-
     restart: unless-stopped
     depends_on:
       - db
       - mqtt
     environment:
       - DATABASE_URL=postgresql://mqtt-mcping:mqtt-mcping@db/mqtt-mcping
+      - MQTT_HOST=mqtt
   db:
     image: postgres
     restart: unless-stopped
@@ -17,6 +17,7 @@ services:
       POSTGRES_USER: mqtt-mcping
       POSTGRES_PASSWORD: mqtt-mcping
       POSTGRES_DB: mqtt-mcping
+      MQTT_SERVER: mqtt
     volumes:
       - mcping-db:/var/lib/postgresql/data
     ports:
@@ -26,8 +27,7 @@ services:
     restart: unless-stopped
     ports:
       - 1883:1883
-    environment:
-      - MQTT_USER=mqtt-mcping
-      - MQTT_PASSWORD=mqtt-mcping
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
 volumes:
   mcping-db:

@@ -31,6 +31,10 @@ async fn main() {
 
     let (mqtt, ev) = mqtt_setup(db_conn);
 
+    mqtt.publish("mcping/active", QoS::AtLeastOnce, true, "true")
+        .await
+        .expect("Failed to publish active message");
+
     match mqtt.subscribe("mcping/#", QoS::AtLeastOnce).await {
         Ok(_) => info!("Subscribed to mcping/#"),
         Err(e) => error!("Failed to subscribe to mcping/#: {}", e),
@@ -79,13 +83,20 @@ async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: &AsyncClien
 fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) {
     let mut mqtt_options = MqttOptions::new(
         "mcping",
-        env::var("MQTT_SERVER").unwrap_or("localhost".to_string()),
+        env::var("MQTT_HOST").unwrap_or("localhost".to_string()),
         1883,
     );
-
+    debug!("MQTT Server: {:?}", mqtt_options.broker_address());
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_credentials("mcping", "password");
+    mqtt_options.set_last_will(rumqttc::LastWill::new(
+        "mcping/active",
+        "down",
+        QoS::AtLeastOnce,
+        false,
+    ));
     let (mqtt, eventloop) = AsyncClient::new(mqtt_options, 10);
+
     let mqtt_rc = Arc::new(mqtt);
     let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone(), db_conn));
 
