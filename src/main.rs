@@ -207,7 +207,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
 
 async fn post_to_mqtt(client: &AsyncClient, topic: &str, data: &str) {
     client
-        .try_publish(topic, QoS::AtLeastOnce, false, data)
+        .try_publish(topic, QoS::AtLeastOnce, true, data)
         .expect("that should have worked ; failed to send message");
 }
 
