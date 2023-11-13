@@ -237,7 +237,6 @@ async fn check_server(
             return Err(Box::new(e));
         }
     };
-
     let players_str: String;
     if data.players.online > 0 && data.players.sample.is_some() {
         players_str =
@@ -250,7 +249,6 @@ async fn check_server(
                     acc.push_str(format!("{}, ", player.name).as_str());
                     acc
                 });
-        debug!("Players: {}", players_str);
     } else {
         players_str = "No players online".to_string();
     }
@@ -265,11 +263,12 @@ async fn check_server(
         ("players", players_str),
     ]);
 
+    let mut output_string = String::new();
     for (key, value) in entries.iter() {
         post_to_mqtt(&mqtt, &format!("mcping/{}/{}", server.name, key), value).await;
-        debug!("{}: {}", key, value);
+        output_string.push_str(format!("{}: {}\n", key, value).as_str());
     }
+    debug!("{}", output_string);
 
-    post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
     return Ok(data);
 }
