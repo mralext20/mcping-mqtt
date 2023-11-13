@@ -24,6 +24,17 @@ async fn main() {
         .init();
 
     dotenvy::dotenv().ok();
+    let keys = [
+        "MQTT_HOST",
+        "MQTT_USERNAME",
+        "MQTT_PASSWORD",
+        "DATABASE_URL",
+    ];
+    for key in keys.iter() {
+        if env::var(key).is_err() {
+            panic!("{} is not set", key);
+        }
+    }
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_conn = AsyncPgConnection::establish(&database_url)
         .await
@@ -88,7 +99,10 @@ fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) 
     );
     debug!("MQTT Server: {:?}", mqtt_options.broker_address());
     mqtt_options.set_keep_alive(Duration::from_secs(5));
-    mqtt_options.set_credentials("mcping", "password");
+    mqtt_options.set_credentials(
+        env::var("MQTT_USERNAME").unwrap(),
+        env::var("MQTT_PASSWORD").unwrap()
+    );
     mqtt_options.set_last_will(rumqttc::LastWill::new(
         "mcping/active",
         "down",
