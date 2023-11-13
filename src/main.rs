@@ -56,7 +56,7 @@ async fn main() {
         .expect("could not connect to database");
 
     loop {
-        server_checking_loop(&mut db_conn, &mqtt).await;
+        server_checking_loop(&mut db_conn, mqtt.clone()).await;
         tokio::time::sleep(Duration::from_secs(30)).await;
         if ev.is_finished() {
             break;
@@ -64,30 +64,15 @@ async fn main() {
     }
 }
 
-async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: &AsyncClient) {
+async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: Arc<AsyncClient>) {
     let servers: Vec<MinecraftServer> = servers::table
         .select(MinecraftServer::as_select())
         .load(db_conn)
         .await
         .expect("Failed to load servers from database");
-    for server in servers.iter() {
-        let res = check_server(&server, mqtt).await;
-        match res {
-            Ok(_res) => {
-                info!("{} is up!", server.name);
-                post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
-            }
-            Err(e) => {
-                error!("{} is down: {}", server.name, e);
-                post_to_mqtt(
-                    &mqtt,
-                    &format!("mcping/{}", server.name).to_string(),
-                    "down",
-                )
-                .await;
-                continue;
-            }
-        }
+    for server in servers.into_iter() {
+        let mqtt = mqtt.clone();
+        tokio::task::spawn(check_server(server, mqtt));
     }
 }
 
@@ -101,7 +86,7 @@ fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) 
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_credentials(
         env::var("MQTT_USERNAME").unwrap(),
-        env::var("MQTT_PASSWORD").unwrap()
+        env::var("MQTT_PASSWORD").unwrap(),
     );
     mqtt_options.set_last_will(rumqttc::LastWill::new(
         "mcping/active",
@@ -226,9 +211,9 @@ async fn post_to_mqtt(client: &AsyncClient, topic: &str, data: &str) {
 }
 
 async fn check_server(
-    server: &MinecraftServer,
-    mqtt: &AsyncClient,
-) -> Result<JavaResponse, Box<dyn std::error::Error>> {
+    server: MinecraftServer,
+    mqtt: Arc<AsyncClient>,
+) -> Result<JavaResponse, Box<dyn std::error::Error + Send>> {
     debug!("Checking {}", server.host);
     let (latency, data) = match get_status(Java {
         server_address: server.host.clone(),
@@ -236,7 +221,11 @@ async fn check_server(
     })
     .await
     {
-        Ok(data) => data,
+        Ok(data) => {
+            info!("{} is up!", server.name);
+            post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
+            data
+        }
         Err(e) => {
             error!("{}: Server is offline: {}", server.name, e);
             post_to_mqtt(
