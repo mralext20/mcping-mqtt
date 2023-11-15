@@ -17,7 +17,7 @@ this program uses a mqtt based api to create and delete servers. the api is as f
 
 ## creating servers
 
-send a message to the topic `mcping/create` with the payload `{"name": "server name", "address": "server address"}` to create a server.
+send a message to the topic `mcping/create` with the payload `{"name": "server name", "host": "server address"}` to create a server.
 
 listen to mcping/create for details about the success or failure of adding a server. 
 
