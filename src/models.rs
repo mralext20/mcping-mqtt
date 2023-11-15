@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Queryable, Selectable, Insertable, Debug, Serialize, Deserialize)]
+#[derive(Queryable, Selectable, Insertable, Debug, Serialize, Deserialize, Clone)]
 #[diesel(table_name = crate::schema::servers)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct MinecraftServer {

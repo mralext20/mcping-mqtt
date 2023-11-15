@@ -9,7 +9,9 @@ use models::MinecraftServer;
 
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use mcping::{tokio::get_status, Java, JavaResponse};
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
+use rumqttc::{
+    tokio_rustls::rustls::server, AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS,
+};
 use std::{collections::HashMap, env, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
@@ -160,18 +162,29 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                     .load(&mut db_conn)
                     .await
                     .expect("Failed to insert server into database");
-                if inserted.len() != 1 {
-                    error!("Failed to insert server into database");
-                    mqtt.try_publish(
-                        "mcping/create/error",
-                        QoS::AtLeastOnce,
-                        false,
-                        "Failed to insert server into database",
-                    )
-                    .expect("Failed to publish error message");
-                    continue;
-                } else {
-                    debug!("Server added: {:?}", inserted[0]);
+                match inserted.len() {
+                    1 => {
+                        debug!("Server added: {:?}", inserted[0]);
+                        mqtt.try_publish(
+                            "mcping/create/success",
+                            QoS::AtLeastOnce,
+                            false,
+                            "Server added",
+                        )
+                        .expect("Failed to publish success message");
+                        tokio::task::spawn(check_server(inserted[0].clone(), mqtt.clone()));
+                    }
+                    _ => {
+                        error!("Failed to insert server into database");
+                        mqtt.try_publish(
+                            "mcping/create/error",
+                            QoS::AtLeastOnce,
+                            false,
+                            "Failed to insert server into database",
+                        )
+                        .expect("Failed to publish error message");
+                        continue;
+                    }
                 }
             }
             Ok(Event::Incoming(Incoming::Publish(p)))
