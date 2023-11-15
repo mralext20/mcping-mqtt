@@ -125,6 +125,11 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to parse JSON: {}", e);
+                        let example_server = MinecraftServer {
+                            host: "mc.hypixel.net".to_string(),
+                            name: "HyPixel".to_string(),
+                        };
+
                         mqtt.try_publish(
                             "mcping/create/error",
                             QoS::AtLeastOnce,
@@ -132,10 +137,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                             format!(
                                 "{:?}: Failed to parse JSON\nuse Format {:?}",
                                 OffsetDateTime::now_local(),
-                                MinecraftServer {
-                                    host: "mc.kbrt.xyz".to_string(),
-                                    name: "KBRT".to_string()
-                                }
+                                serde_json::to_string(&example_server).unwrap()
                             ),
                         )
                         .expect("Failed to publish error message");
@@ -146,10 +148,10 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                 if server_to_add.name == "" || server_to_add.host == "" {
                     error!("Server name or host is empty");
                     mqtt.try_publish(
-                        "mcping/create/error",
+                        "mcping/create",
                         QoS::AtLeastOnce,
                         false,
-                        "Server name is empty",
+                        "ERROR: Server name is empty",
                     )
                     .expect("Failed to publish error message");
                     continue;
@@ -163,22 +165,17 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                 match inserted.len() {
                     1 => {
                         debug!("Server added: {:?}", inserted[0]);
-                        mqtt.try_publish(
-                            "mcping/create/success",
-                            QoS::AtLeastOnce,
-                            false,
-                            "Server added",
-                        )
-                        .expect("Failed to publish success message");
+                        mqtt.try_publish("mcping/create", QoS::AtLeastOnce, false, "Server added")
+                            .expect("Failed to publish success message");
                         tokio::task::spawn(check_server(inserted[0].clone(), mqtt.clone()));
                     }
                     _ => {
                         error!("Failed to insert server into database");
                         mqtt.try_publish(
-                            "mcping/create/error",
+                            "mcping/create",
                             QoS::AtLeastOnce,
                             false,
-                            "Failed to insert server into database",
+                            "ERROR: Failed to insert server into database",
                         )
                         .expect("Failed to publish error message");
                         continue;
@@ -200,7 +197,11 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
 
                 if deleted_count > 0 {
                     debug!("Server deleted: {:?}", p.topic.replace("mcping/", ""));
+                    mqtt.try_publish(p.topic, QoS::AtLeastOnce, false, "deleted")
+                        .expect("Failed to publish success message");
                 } else {
+                    mqtt.try_publish(p.topic.clone(), QoS::AtLeastOnce, false, "failed to delete")
+                        .expect("Failed to publish error message");
                     error!("Server not found: {}", p.topic);
                     continue;
                 };
