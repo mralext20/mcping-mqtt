@@ -35,6 +35,14 @@ async fn main() {
             panic!("{} is not set", key);
         }
     }
+
+    let check_freq = Duration::from_secs(
+        env::var("CHECK_FREQ")
+            .unwrap_or("60".to_string())
+            .parse::<u64>()
+            .expect("CHECK_FREQ must be a number"),
+    );
+
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db_conn = AsyncPgConnection::establish(&database_url)
         .await
@@ -57,7 +65,7 @@ async fn main() {
 
     loop {
         server_checking_loop(&mut db_conn, mqtt.clone()).await;
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep(check_freq).await;
         if ev.is_finished() {
             break;
         }
