@@ -253,7 +253,7 @@ async fn check_server(
         players_str = "No players online".to_string();
     }
 
-    let entries = HashMap::from([
+    let entries = [
         ("host", server.host.clone()),
         ("latency", latency.to_string()),
         ("version", data.version.name.clone()),
@@ -261,7 +261,7 @@ async fn check_server(
         ("player_count", data.players.online.to_string()),
         ("player_max", data.players.max.to_string()),
         ("players", players_str),
-    ]);
+    ];
 
     let mut output_string = String::new();
     for (key, value) in entries.iter() {
