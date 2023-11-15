@@ -9,10 +9,8 @@ use models::MinecraftServer;
 
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use mcping::{tokio::get_status, Java, JavaResponse};
-use rumqttc::{
-    tokio_rustls::rustls::server, AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS,
-};
-use std::{collections::HashMap, env, sync::Arc, time::Duration};
+use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
+use std::{env, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
 use time::OffsetDateTime;
