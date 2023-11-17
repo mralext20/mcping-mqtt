@@ -10,7 +10,7 @@ use models::MinecraftServer;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use mcping::{tokio::get_status, Java, JavaResponse};
 use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, QoS};
-use std::{env, sync::Arc, time::Duration};
+use std::{collections::HashMap, env, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
 use time::OffsetDateTime;
@@ -78,7 +78,21 @@ async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: Arc<AsyncCl
         .load(db_conn)
         .await
         .expect("Failed to load servers from database");
-    for server in servers.into_iter() {
+
+    let mut server_map: HashMap<String, Vec<String>> = HashMap::new();
+
+    for server in servers.iter() {
+        if server_map.contains_key(server.host.as_str()) {
+            server_map
+                .get_mut(&server.host.to_string())
+                .unwrap()
+                .push(server.name.clone());
+        } else {
+            server_map.insert(server.host.clone(), vec![server.name.clone()]);
+        }
+    }
+
+    for (host, listeners) in server_map.into_iter() {
         let mqtt = mqtt.clone();
         tokio::task::spawn(check_server(server, mqtt));
     }
@@ -175,7 +189,11 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                         debug!("Server added: {:?}", inserted[0]);
                         mqtt.try_publish("mcping/create", QoS::AtLeastOnce, false, "Server added")
                             .expect("Failed to publish success message");
-                        tokio::task::spawn(check_server(inserted[0].clone(), mqtt.clone()));
+                        tokio::task::spawn(check_server(
+                            inserted[0].host.clone(),
+                            vec![inserted[0].name.clone()],
+                            mqtt.clone(),
+                        ));
                     }
                     _ => {
                         error!("Failed to insert server into database");
@@ -231,29 +249,39 @@ async fn post_to_mqtt(client: &AsyncClient, topic: &str, data: &str) {
 }
 
 async fn check_server(
-    server: MinecraftServer,
+    host: String,
+    listeners: Vec<String>,
     mqtt: Arc<AsyncClient>,
 ) -> Result<JavaResponse, Box<dyn std::error::Error + Send>> {
-    debug!("Checking {}", server.host);
+    debug!("Checking {}", host);
     let (latency, data) = match get_status(Java {
-        server_address: server.host.clone(),
+        server_address: host.to_string(),
         timeout: Some(Duration::from_secs(5)),
     })
     .await
     {
         Ok(data) => {
-            info!("{} is up!", server.name);
-            post_to_mqtt(&mqtt, &format!("mcping/{}", server.name).to_string(), "up").await;
+            info!(
+                "{} is up, reporting for {} listeners",
+                host,
+                listeners.len()
+            );
+            for server in listeners.iter() {
+                post_to_mqtt(&mqtt, &format!("mcping/{}", server).to_string(), "up").await;
+            }
             data
         }
         Err(e) => {
-            error!("{}: Server is offline: {}", server.name, e);
-            post_to_mqtt(
-                &mqtt,
-                &format!("mcping/{}", server.name).to_string(),
-                "down",
-            )
-            .await;
+            error!(
+                "{}: Server is offline: {}, posting for {} listeners",
+                host,
+                e,
+                listeners.len()
+            );
+            for server in listeners.iter() {
+                post_to_mqtt(&mqtt, &format!("mcping/{}", server).to_string(), "down").await;
+            }
+
             return Err(Box::new(e));
         }
     };
@@ -274,7 +302,7 @@ async fn check_server(
     }
 
     let entries = [
-        ("host", server.host.clone()),
+        ("host", host.to_string()),
         ("latency", latency.to_string()),
         ("version", data.version.name.clone()),
         ("description", data.description.text().to_string()),
@@ -284,9 +312,11 @@ async fn check_server(
     ];
 
     let mut output_string = String::new();
+    for server in listeners.iter() {
     for (key, value) in entries.iter() {
-        post_to_mqtt(&mqtt, &format!("mcping/{}/{}", server.name, key), value).await;
+            post_to_mqtt(&mqtt, &format!("mcping/{}/{}", server, key), value).await;
         output_string.push_str(format!("{}: {}\n", key, value).as_str());
+        }
     }
     debug!("{}", output_string);
 
