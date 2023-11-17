@@ -167,6 +167,17 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                         continue;
                     }
                 };
+                if server_to_add.name == "active" {
+                    error!("Server name cannot be 'active'");
+                    mqtt.try_publish(
+                        "mcping/create",
+                        QoS::AtLeastOnce,
+                        false,
+                        "ERROR: Server name cannot be 'active'",
+                    )
+                    .expect("Failed to publish error message");
+                    continue;
+                }
                 if server_to_add.name == "" || server_to_add.host == "" {
                     error!("Server name or host is empty");
                     mqtt.try_publish(
