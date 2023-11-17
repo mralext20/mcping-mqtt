@@ -120,7 +120,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                     Err(e) => {
                         error!("Failed to parse payload: {}", e);
                         mqtt.try_publish(
-                            "mcping/create/error",
+                            "mcping/create",
                             QoS::AtLeastOnce,
                             false,
                             "Failed to parse payload",
@@ -139,7 +139,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                         };
 
                         mqtt.try_publish(
-                            "mcping/create/error",
+                            "mcping/create",
                             QoS::AtLeastOnce,
                             false,
                             format!(
