@@ -50,10 +50,6 @@ async fn main() {
 
     let (mqtt, ev) = mqtt_setup(db_conn);
 
-    mqtt.publish("mcping/active", QoS::AtLeastOnce, true, "true")
-        .await
-        .expect("Failed to publish active message");
-
     match mqtt.subscribe("mcping/#", QoS::AtLeastOnce).await {
         Ok(_) => info!("Subscribed to mcping/#"),
         Err(e) => error!("Failed to subscribe to mcping/#: {}", e),
@@ -94,7 +90,7 @@ async fn server_checking_loop(db_conn: &mut AsyncPgConnection, mqtt: Arc<AsyncCl
 
     for (host, listeners) in server_map.into_iter() {
         let mqtt = mqtt.clone();
-        tokio::task::spawn(check_server(server, mqtt));
+        tokio::task::spawn(check_server(host, listeners, mqtt));
     }
 }
 
@@ -114,10 +110,11 @@ fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) 
         "mcping/active",
         "down",
         QoS::AtLeastOnce,
-        false,
+        true,
     ));
-    let (mqtt, eventloop) = AsyncClient::new(mqtt_options, 10);
-
+    let (mqtt, eventloop) = AsyncClient::new(mqtt_options, 100);
+    mqtt.try_publish("mcping/active", QoS::AtLeastOnce, true, "up")
+        .expect("Failed to publish active message");
     let mqtt_rc = Arc::new(mqtt);
     let evloop = tokio::spawn(mqtt_loop(eventloop, mqtt_rc.clone(), db_conn));
 
@@ -127,6 +124,9 @@ fn mqtt_setup(db_conn: AsyncPgConnection) -> (Arc<AsyncClient>, JoinHandle<()>) 
 async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: AsyncPgConnection) {
     loop {
         match ev.poll().await {
+            Ok(Event::Incoming(Incoming::Connect(_))) => {
+                debug!("MQTT Connected");
+            }
             Ok(Event::Incoming(Incoming::Publish(p))) if p.topic == "mcping/create" => {
                 debug!("publish on create new server: {:?}", p.payload);
                 let payload = match std::str::from_utf8(&p.payload) {
@@ -243,9 +243,13 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
 }
 
 async fn post_to_mqtt(client: &AsyncClient, topic: &str, data: &str) {
-    client
-        .try_publish(topic, QoS::AtLeastOnce, true, data)
-        .expect("that should have worked ; failed to send message");
+    match client.try_publish(topic, QoS::AtLeastOnce, true, data) {
+        Ok(_) => (),
+        Err(e) => {
+            error!("Failed to publish to MQTT: {}", e);
+            debug!("was attempting to MQTT: {} -> {}", topic, data);
+        }
+    }
 }
 
 async fn check_server(
@@ -313,9 +317,9 @@ async fn check_server(
 
     let mut output_string = String::new();
     for server in listeners.iter() {
-    for (key, value) in entries.iter() {
+        for (key, value) in entries.iter() {
             post_to_mqtt(&mqtt, &format!("mcping/{}/{}", server, key), value).await;
-        output_string.push_str(format!("{}: {}\n", key, value).as_str());
+            output_string.push_str(format!("{}: {}\n", key, value).as_str());
         }
     }
     debug!("{}", output_string);
