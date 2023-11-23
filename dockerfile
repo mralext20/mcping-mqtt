@@ -18,7 +18,7 @@ COPY src ./src
 RUN cargo build --release
 
 # Use a smaller image for the runtime step
-FROM rust:slim
+FROM debian:stable-slim
 
 # Copy the binary from the build step to the runtime container
 COPY --from=build /usr/src/app/target/release/mcping-mqtt /usr/local/bin/mcping-mqtt
