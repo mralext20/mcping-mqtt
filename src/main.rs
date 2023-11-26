@@ -178,7 +178,7 @@ async fn mqtt_loop(mut ev: EventLoop, mqtt: Arc<AsyncClient>, mut db_conn: Async
                     .expect("Failed to publish error message");
                     continue;
                 }
-                if server_to_add.name == "" || server_to_add.host == "" {
+                if server_to_add.name.is_empty() || server_to_add.host.is_empty() {
                     error!("Server name or host is empty");
                     mqtt.try_publish(
                         "mcping/create",
@@ -300,21 +300,19 @@ async fn check_server(
             return Err(Box::new(e));
         }
     };
-    let players_str: String;
-    if data.players.online > 0 && data.players.sample.is_some() {
-        players_str =
-            data.players
-                .sample
-                .as_ref()
-                .unwrap()
-                .iter()
-                .fold(String::new(), |mut acc, player| {
-                    acc.push_str(format!("{}, ", player.name).as_str());
-                    acc
-                });
+    let players_str = if data.players.online > 0 && data.players.sample.is_some() {
+        data.players
+            .sample
+            .as_ref()
+            .unwrap()
+            .iter()
+            .fold(String::new(), |mut acc, player| {
+                acc.push_str(format!("{}, ", player.name).as_str());
+                acc
+            })
     } else {
-        players_str = "No players online".to_string();
-    }
+        "No players online".to_string()
+    };
 
     let entries = [
         ("host", host.to_string()),
