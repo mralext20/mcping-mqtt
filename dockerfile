@@ -6,7 +6,9 @@ WORKDIR /usr/src/app
 
 
 # Copy the Cargo.toml and Cargo.lock files to the container
-COPY Cargo.toml Cargo.lock dummy.rs migrations ./
+COPY migrations ./migrations
+COPY Cargo.toml Cargo.lock dummy.rs  ./
+CMD ["/bin/sh"]
 RUN sed -i 's#src/main.rs#dummy.rs#' Cargo.toml
 RUN cargo build --release
 RUN sed -i 's#dummy.rs#src/main.rs#' Cargo.toml
