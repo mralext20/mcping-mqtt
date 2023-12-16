@@ -7,8 +7,11 @@ use std::{env, time::Duration};
 
 mod minecraft;
 mod mqtt;
-
+use diesel::pg::{Pg, PgConnection};
+use diesel::Connection;
+use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use log::{error, info};
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 
 #[tokio::main]
 async fn main() {
@@ -40,6 +43,9 @@ async fn main() {
     let db_conn = AsyncPgConnection::establish(&database_url)
         .await
         .expect("could not connect to database");
+    let mut blocking = PgConnection::establish(&database_url)
+        .unwrap_or_else(|_| panic!("Error connecting to {}", database_url));
+    run_migrations(&mut blocking).unwrap_or_else(|_| panic!("Error running migrations"));
 
     let (mqtt, ev) = mqtt::setup(db_conn);
 
@@ -59,4 +65,16 @@ async fn main() {
             break;
         }
     }
+}
+
+fn run_migrations(
+    connection: &mut impl MigrationHarness<Pg>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    // This will run the necessary migrations.
+    //
+    // See the documentation for `MigrationHarness` for
+    // all available methods.
+    connection.run_pending_migrations(MIGRATIONS)?;
+
+    Ok(())
 }
